@@ -1,45 +1,153 @@
+# ==========================================================================
+# TSBot (NeteaseTSBot) — Docker Compose 部署文件
+# 项目目录建议：/www/wwwroot/docker/netease-tsbot
+#
+# 首次部署（在项目目录内执行）：
+#   git clone https://github.com/yichen11818/NeteaseTSBot.git .
+#   cp tsbot.env.example tsbot.env      # 然后改里面的 TSBOT_COOKIE_KEY
+#   docker compose up -d --build
+#
+# 不要改：服务名 backend / voice-service / web，以及 backend 的 8009 端口。
+# 原因：web 容器里的 Nginx 固定通过 http://backend:8009 转发 /api。
+# ==========================================================================
+
 services:
+  # ---------- TS 语音服务（Rust，gRPC 50051，仅容器内网） ----------
   voice-service:
     build:
       context: .
       dockerfile: Dockerfile.voice-service
+    # 不想在本机编译 Rust 时：注释上面两行，启用下面这行预构建镜像
+    # image: yumi118/neteasetsbot-voice-service:latest
     env_file:
       - tsbot.env
-    ports:
-      - "50051:50051"
+    restart: unless-stopped
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
       - voicetmp:/app/tmp
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - timeout 2 bash -c '</dev/tcp/127.0.0.1/50051'
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - tsbot
 
+  # ---------- 后端（Python FastAPI，8009，仅容器内网） ----------
   backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
+    # image: yumi118/neteasetsbot-backend:latest
     env_file:
       - tsbot.env
     environment:
+      TZ: Asia/Shanghai
       TSBOT_HOST: 0.0.0.0
       TSBOT_PORT: 8009
       TSBOT_VOICE_GRPC_ADDR: voice-service:50051
       DATABASE_URL: sqlite:///./data/tsbot.db
+    # 若网易云 API 部署在宿主机（不在本 compose 内），取消下面两行注释，
+    # 并在 Web 控制台把接口地址填成 http://host.docker.internal:3000/
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
     depends_on:
-      - voice-service
-    ports:
-      - "8009:8009"
+      voice-service:
+        condition: service_healthy
+    restart: unless-stopped
     volumes:
       - ./logs:/app/logs
       - ./data:/app/data
       - voicetmp:/app/tmp
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c "import socket;s=socket.socket();s.settimeout(3);s.connect(('127.0.0.1',8009));s.close()"
+      interval: 20s
+      timeout: 6s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - tsbot
 
+  # ---------- Web 控制台（Nginx + 前端产物，8080） ----------
   web:
     build:
       context: .
       dockerfile: Dockerfile.web
+    # image: yumi118/neteasetsbot-web:latest
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    # 默认只监听本机，对外由宝塔/Nginx 反向代理到 https://你的域名
+    # 想让公网直接 IP:8080 访问，改成 "8080:8080" 并放行腾讯云安全组
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:8080/ || exit 1
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - tsbot
+
+  # ---------- 网易云音乐 API（可选，供上面后端调用） ----------
+  # 如果宿主机上已经有网易云 API（127.0.0.1:3000），把这一整段删掉即可。
+  netease-api:
+    image: binaryify/netease_cloud_music_api:latest
+    # 若拉取报 manifest unknown / not found，把镜像名换成 binaryify/neteasecloudmusicapi 再试
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "3000"
+    restart: unless-stopped
+    # 只给本 compose 内的容器用，不占宿主机端口；需要在本机调试时再放开下面两行
+    # ports:
+    #   - "127.0.0.1:3000:3000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "require('http').get('http://127.0.0.1:3000/', r => process.exit(r.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    mem_limit: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - tsbot
+
+networks:
+  tsbot:
+    driver: bridge
 
 volumes:
   voicetmp:
