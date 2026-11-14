@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { apiGet, apiPost } from '../api'
 import { buildNeteaseQueuePayload } from '../utils/queue'
 import { 
@@ -9,7 +9,10 @@ import {
   Clock, 
   Music,
   RefreshCw,
-  AlertCircle
+  AlertCircle,
+  ArrowUpDown,
+  Check,
+  ChevronDown
 } from 'lucide-vue-next'
 import { getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
 import FloatingErrorToast from '../components/FloatingErrorToast.vue'
@@ -17,10 +20,19 @@ import { useTransientMessage } from '../composables/useTransientMessage'
 import { DEMO_MODE } from '../demoMode'
 
 const USER_COOKIE_KEY = 'tsbot_user_netease_cookie'
-const LIKES_CACHE_KEY = 'tsbot_likes_cache'
+const LIKES_CACHE_KEY = 'tsbot_likes_cache_v2'
 const LIKES_CACHE_DURATION = 150 * 60 * 1000 // 5分钟缓存
+const SORT_STORAGE_KEY = 'tsbot:likes:sort'
 
 const PAGE_SIZE = 200
+
+type SortMode = 'default' | 'added' | 'name'
+
+const SORT_OPTIONS: { value: SortMode; label: string }[] = [
+  { value: 'default', label: '顺序' },
+  { value: 'added', label: '添加时间（新→旧）' },
+  { value: 'name', label: '名称（A→Z）' },
+]
 
 const error = ref('')
 const likes = ref<any>(null)
@@ -28,7 +40,62 @@ const loading = ref(false)
 
 const offset = ref(0)
 const hasMore = ref(false)
+const sortMode = ref<SortMode>(loadSortMode())
+const showSortMenu = ref(false)
+const sortMenuRef = ref<HTMLElement | null>(null)
 const { message: actionError, showMessage: showActionError } = useTransientMessage()
+
+function loadSortMode(): SortMode {
+  try {
+    const raw = String(localStorage.getItem(SORT_STORAGE_KEY) || '')
+    return raw === 'added' || raw === 'name' ? raw : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+const currentSortLabel = computed(
+  () => SORT_OPTIONS.find((option) => option.value === sortMode.value)?.label || '顺序',
+)
+
+function selectSort(value: SortMode) {
+  sortMode.value = value
+  showSortMenu.value = false
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, sortMode.value)
+  } catch {
+    // 忽略存储失败
+  }
+}
+
+function toggleSortMenu() {
+  showSortMenu.value = !showSortMenu.value
+}
+
+function handleDocumentPointerDown(event: PointerEvent) {
+  if (!showSortMenu.value) return
+  const target = event.target as Node | null
+  if (!target) return
+  if (sortMenuRef.value?.contains(target)) return
+  showSortMenu.value = false
+}
+
+function handleDocumentKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') showSortMenu.value = false
+}
+
+const sortedSongs = computed(() => {
+  const list = Array.isArray(likes.value?.songs) ? [...likes.value.songs] : []
+  if (sortMode.value === 'added') {
+    return list.sort((a, b) => Number(b?.added_at || 0) - Number(a?.added_at || 0))
+  }
+  if (sortMode.value === 'name') {
+    return list.sort((a, b) =>
+      String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN', { numeric: true }),
+    )
+  }
+  return list
+})
 
 const favoriteSongIds = ref<Set<number>>(new Set())
 
@@ -111,7 +178,8 @@ async function load(forceRefresh = false) {
     if (!cookie && !DEMO_MODE) {
       throw new Error('需要先设置网易云音乐 Cookie')
     }
-    const data = await apiGet<any>(`/netease/likes?offset=0&limit=${PAGE_SIZE}`, { 'X-Netease-Cookie': cookie })
+    // 一次取全部收藏，才能对整库做排序（不再需要「加载更多」）
+    const data = await apiGet<any>('/netease/likes?offset=0&limit=0', { 'X-Netease-Cookie': cookie })
     likes.value = data
     offset.value = Number(data?.offset ?? 0) + (Number(data?.limit ?? 0) || PAGE_SIZE)
     hasMore.value = Boolean(data?.has_more)
@@ -177,6 +245,13 @@ function formatDuration(duration: number): string {
 onMounted(() => {
   refreshFavoriteSongIds()
   load(false) // 首次加载使用缓存
+  document.addEventListener('pointerdown', handleDocumentPointerDown)
+  document.addEventListener('keydown', handleDocumentKeydown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  document.removeEventListener('keydown', handleDocumentKeydown)
 })
 </script>
 
@@ -193,14 +268,65 @@ onMounted(() => {
           显示您在网易云音乐中收藏的歌曲
         </span>
       </div>
-      <button 
-        @click="() => load(true)"
-        :disabled="loading"
-        class="btn-secondary text-sm py-1.5 px-3"
-      >
-        <RefreshCw :size="16" :class="{ 'animate-spin': loading }" />
-        <span class="hidden sm:inline">刷新</span>
-      </button>
+      <div class="flex items-center gap-2">
+        <div ref="sortMenuRef" class="relative">
+          <button
+            type="button"
+            @click="toggleSortMenu"
+            aria-haspopup="listbox"
+            :aria-expanded="showSortMenu"
+            title="排序方式"
+            class="group inline-flex items-center gap-2 whitespace-nowrap rounded-full border bg-white py-1.5 pl-3.5 pr-2.5 text-sm font-medium shadow-sm transition-all duration-200"
+            :class="showSortMenu
+              ? 'border-red-200 bg-red-50/50 text-red-600 shadow'
+              : 'border-gray-200 text-gray-600 hover:border-red-200 hover:text-red-600 hover:shadow'"
+          >
+            <ArrowUpDown
+              :size="15"
+              class="text-gray-400 transition-colors duration-200"
+              :class="{ '!text-red-500': showSortMenu, 'group-hover:text-red-500': !showSortMenu }"
+            />
+            <span>{{ currentSortLabel }}</span>
+            <ChevronDown
+              :size="14"
+              class="text-gray-400 transition-transform duration-200"
+              :class="{ 'rotate-180 text-red-500': showSortMenu }"
+            />
+          </button>
+
+          <Transition name="sort-fade">
+            <div
+              v-if="showSortMenu"
+              role="listbox"
+              class="absolute right-0 z-30 mt-2 w-52 origin-top-right rounded-2xl border border-gray-100 bg-white/95 p-1.5 shadow-xl shadow-gray-300/30 backdrop-blur-sm"
+            >
+              <button
+                v-for="option in SORT_OPTIONS"
+                :key="option.value"
+                type="button"
+                role="option"
+                :aria-selected="sortMode === option.value"
+                @click="selectSort(option.value)"
+                class="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition-colors duration-150"
+                :class="sortMode === option.value
+                  ? 'bg-red-50 font-medium text-red-600'
+                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'"
+              >
+                <span>{{ option.label }}</span>
+                <Check v-if="sortMode === option.value" :size="15" class="text-red-500" />
+              </button>
+            </div>
+          </Transition>
+        </div>
+        <button
+          @click="() => load(true)"
+          :disabled="loading"
+          class="btn-secondary text-sm py-1.5 px-3"
+        >
+          <RefreshCw :size="16" :class="{ 'animate-spin': loading }" />
+          <span class="hidden sm:inline">刷新</span>
+        </button>
+      </div>
     </div>
 
     <!-- Content -->
@@ -251,7 +377,7 @@ onMounted(() => {
             </thead>
             <tbody class="divide-y divide-gray-50">
               <tr
-                v-for="(song, index) in likes.songs"
+                v-for="(song, index) in sortedSongs"
                 :key="song.id"
                 class="group hover:bg-red-50/30 transition-colors duration-200"
               >
@@ -314,7 +440,7 @@ onMounted(() => {
                       <Play :size="18" />
                     </button>
                     
-                    <button 
+                    <button
                       @click="toggleLocalFavorite(song)"
                       :class="isLocalFavorite(song) ? 'text-red-500 bg-red-50' : 'text-gray-400 hover:text-red-600 hover:bg-red-50'"
                       class="p-2 rounded-lg transition-colors"
@@ -347,3 +473,16 @@ onMounted(() => {
   </div>
   <FloatingErrorToast :message="actionError" />
 </template>
+
+<style scoped>
+.sort-fade-enter-active,
+.sort-fade-leave-active {
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.sort-fade-enter-from,
+.sort-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+}
+</style>
