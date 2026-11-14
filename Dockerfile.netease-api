@@ -1,0 +1,20 @@
+# NeteaseCloudMusicApi 4.32.0（npm 官方包，原作者仍在维护）
+#
+# 用法（在项目目录 /www/wwwroot/docker/netease-tsbot 里执行）：
+#   docker build -f Dockerfile.netease-api -t binaryify/netease_cloud_music_api:latest .
+# 打上和原 compose 一样的标签，因此不需要改 compose 文件。
+#
+# 基础镜像用的是 node:20-bookworm-slim —— 和构建 web 用的同一个，
+# 本地已有缓存，不会再下载。
+FROM node:20-bookworm-slim
+# 若 npm 官方源慢，把这行注释取消，改用国内镜像源
+# RUN npm config set registry https://registry.npmmirror.com
+RUN npm install -g NeteaseCloudMusicApi@4.32.0 \
+    && npm cache clean --force
+# 放到包目录里运行，保证它写的 data/ 缓存落在自己的可写目录
+WORKDIR /usr/local/lib/node_modules/NeteaseCloudMusicApi
+ENV TZ=Asia/Shanghai \
+    PORT=3000 \
+    NODE_ENV=production
+EXPOSE 3000
+CMD ["NeteaseCloudMusicApi"]

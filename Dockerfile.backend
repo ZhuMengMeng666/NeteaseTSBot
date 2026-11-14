@@ -2,6 +2,20 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# ---------- 国内下载加速（境外服务器可整段删掉）----------
+# 1) Debian apt 源：playwright install --with-deps 要装一批系统库
+#    想更快可把 mirrors.aliyun.com 换成 mirrors.tencentyun.com（腾讯云内网源）
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        [ -f "$f" ] && sed -i 's|deb.debian.org|mirrors.aliyun.com|g' "$f"; \
+    done; true
+# 2) pip 源（官方源 files.pythonhosted.org 在国内会 Read timed out）
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=5
+# 3) Playwright 浏览器下载源（默认走境外 CDN，很慢；若报 404 就删掉这两行）
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright \
+    PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=180000
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PLAYWRIGHT_BROWSERS_PATH=/ms-playwright

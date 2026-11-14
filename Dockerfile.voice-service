@@ -2,6 +2,18 @@ FROM rust:1.88-bookworm AS builder
 
 WORKDIR /app
 
+# ---------- 国内下载加速（境外服务器可整段删掉）----------
+# 1) Debian apt 源
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        [ -f "$f" ] && sed -i 's|deb.debian.org|mirrors.aliyun.com|g' "$f"; \
+    done; true
+# 2) crates.io 换中科大稀疏源（vendor/ 里只有 tsproto、tsclientlib 两个补丁包，
+#    其余依赖都要从 crates.io 拉，直连会卡）
+RUN printf '[source.crates-io]\nreplace-with = "ustc"\n\n[source.ustc]\nregistry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"\n' \
+    >> /usr/local/cargo/config.toml
+ENV CARGO_HTTP_TIMEOUT=180 \
+    CARGO_NET_RETRY=10
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends cmake \
     && rm -rf /var/lib/apt/lists/*
@@ -13,6 +25,11 @@ COPY vendor /app/vendor
 RUN cargo build --manifest-path /app/voice-service/Cargo.toml --release
 
 FROM debian:bookworm-slim
+
+# Debian apt 源换国内镜像
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        [ -f "$f" ] && sed -i 's|deb.debian.org|mirrors.aliyun.com|g' "$f"; \
+    done; true
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg \
