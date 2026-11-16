@@ -16,6 +16,7 @@ import {
   Search
 } from 'lucide-vue-next'
 import { getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
+import { filterLikedSongs } from '../utils/likesSearch'
 import FloatingErrorToast from '../components/FloatingErrorToast.vue'
 import { useTransientMessage } from '../composables/useTransientMessage'
 import { DEMO_MODE } from '../demoMode'
@@ -100,14 +101,7 @@ const sortedSongs = computed(() => {
 })
 
 const visibleSongs = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase()
-  if (!query) return sortedSongs.value
-  return sortedSongs.value.filter((song) => {
-    const title = String(song?.name || '').toLowerCase()
-    const artist = getSongArtists(song).toLowerCase()
-    const album = getSongAlbum(song).toLowerCase()
-    return title.includes(query) || artist.includes(query) || album.includes(query)
-  })
+  return filterLikedSongs(sortedSongs.value, searchQuery.value)
 })
 
 const favoriteSongIds = ref<Set<number>>(new Set())
