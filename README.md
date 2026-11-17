@@ -10,6 +10,8 @@
 
 **NeteaseTSBot** 支持 **TeamSpeak 3 / 6**，提供播放队列、歌词和 Docker 预构建镜像，可自行部署。
 
+**v1.0.0 重大更新：** 一个项目连接多个服务器，独立播放并在 Web 中切换；同时汇总播放恢复、分平台音质、TS6 等级及安全修复。[完整更新与关联 Issue](docs/releases/v1.0.0.md)。
+
 [快速部署](#先把机器人跑起来) · [聊天指令](#teamspeak-聊天指令) · [API 文档](docs/API.md) · [参与贡献](CONTRIBUTING.md) · [反馈问题](https://github.com/yichen11818/NeteaseTSBot/issues/new/choose)
 
 **[在线体验 →](https://yichen11818.github.io/NeteaseTSBot/)** 无需安装即可体验模拟搜索、队列和歌词；不播放真实音频。[演示部署说明](docs/DEMO.md)
@@ -99,6 +101,8 @@ TSBot 的目标是把边界重新划清：
 - **backend/**: Python/FastAPI 后端（队列/搜索/网易云与 QQ 音乐接口/控制语音服务）
 - **voice-service/**: Rust 语音服务（连接 TeamSpeak、播放音频，提供 gRPC 给后端调用）
 - **web/**: Vue3 + Vite 前端（Web 控制台/播放器 UI）
+
+支持在**一个 Compose 项目、一个 Web 入口**下连接多台 TeamSpeak 服务器。各服务器独立运行后端和语音服务，分别管理队列、音量、频道、管理员与音乐账号；网页顶部切换服务器。复制 `servers.example.json` 为 `servers.json`，运行 `python scripts/multi_server.py --init-env` 生成部署配置，再从源码构建启动。完整步骤、旧数据迁移及验证范围见 [多服务器运行指南](HOWTOSTART.md#一个项目连接多个-teamspeak-服务器)。
 
 更多文档：
 
@@ -382,7 +386,7 @@ docker compose down
 
 Compose 默认会启动 3 个服务：
 
-- `voice-service`（50051）
+- `voice-service`（仅容器网络内的 `50051`，不映射宿主机；调试方式见 [运行指南](HOWTOSTART.md#docker-运行)）
 - `backend`（8009）
 - `web`（8080，Nginx 托管生产前端产物，并将 `/api/*` 反向代理到 backend）
 
@@ -416,7 +420,7 @@ docker compose -f docker-compose.prebuilt.yml up -d
 
 - GitHub 的 **Packages** 页面只显示 GHCR 包；如果只推 Docker Hub，这里会是空的。
 - 现在会看到 **3 个镜像仓库**，这是正常现象，因为项目按 `backend` / `web` / `voice-service` 三个服务分别构建与发布。
-- GitHub 的 **Releases** 页面会额外附带 `tsbot-<version>-linux-amd64.tar.gz` 和 `SHA256SUMS.txt`，那是软件包，不是容器镜像。
+- GitHub 的 **Releases** 页面会额外附带 `tsbot-<version>-linux-amd64.tar.gz` 和 `SHA256SUMS.txt`，那是软件包，不是容器镜像。自 v1.0.0 起包含完整跟踪源码、多服务器部署工具、预编译 Voice 二进制与 Web 产物；使用方法见运行指南。
 
 ## 默认端口
 

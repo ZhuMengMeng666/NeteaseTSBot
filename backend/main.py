@@ -62,6 +62,7 @@ from .managed_assets import ASSET_BY_KEY, asset_path, asset_payload, delete_asse
 from .netease import NeteaseClient
 from .netease_cookie import extract_netease_auth_cookie, has_netease_auth_cookie
 from .qqmusic import QQMusicClient
+from .qqmusic_login import QQMusicCookieSetRequest, create_qqmusic_login_router
 from .voice_client import VoiceClient, VoiceStatus
 from .music_quality import NETEASE_QUALITIES
 from .queue_quality import QQMUSIC_QUALITIES, encode_qqmusic_source, qqmusic_queue_quality, strip_qqmusic_source
@@ -88,9 +89,9 @@ voice = VoiceClient()
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BILIBILI_AUDIO_DIR = REPO_ROOT / "tmp" / "bilibili_audio"
-BILIBILI_AUDIO_CACHE_TTL_SECONDS = max(0, settings.bilibili_audio_cache_ttl_hours) * 3600
-BILIBILI_AUDIO_CACHE_MAX_BYTES = max(0, settings.bilibili_audio_cache_max_mb) * 1024 * 1024
-BILIBILI_AUDIO_PARTIAL_TTL_SECONDS = max(0, settings.bilibili_audio_partial_ttl_minutes) * 60
+SECONDS_PER_HOUR = 3600
+SECONDS_PER_MINUTE = 60
+BYTES_PER_MIB = 1024 * 1024
 _BILIBILI_VIDEO_ID_RE = re.compile(r"(BV[0-9A-Za-z]+|av\d+)", re.IGNORECASE)
 _BILIBILI_TAG_RE = re.compile(r"<[^>]+>")
 _BILIBILI_CJK_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
@@ -2228,9 +2229,9 @@ def _find_cached_bilibili_audio(video_id: str) -> str:
     requested_paths = set(BILIBILI_AUDIO_DIR.glob(f"{video_id}.*"))
     prune_result = prune_audio_cache(
         BILIBILI_AUDIO_DIR,
-        max_bytes=BILIBILI_AUDIO_CACHE_MAX_BYTES,
-        ttl_seconds=BILIBILI_AUDIO_CACHE_TTL_SECONDS,
-        partial_ttl_seconds=BILIBILI_AUDIO_PARTIAL_TTL_SECONDS,
+        max_bytes=settings.bilibili_audio_cache_max_mb * BYTES_PER_MIB,
+        ttl_seconds=settings.bilibili_audio_cache_ttl_hours * SECONDS_PER_HOUR,
+        partial_ttl_seconds=settings.bilibili_audio_partial_ttl_minutes * SECONDS_PER_MINUTE,
         protected_paths=requested_paths,
     )
     if prune_result.removed_files:
@@ -4820,9 +4821,6 @@ async def admin_update_settings(
     request: Request,
     session: Session = Depends(get_session),
 ) -> dict:
-    global BILIBILI_AUDIO_CACHE_TTL_SECONDS, BILIBILI_AUDIO_CACHE_MAX_BYTES
-    global BILIBILI_AUDIO_PARTIAL_TTL_SECONDS
-
     _, admin_session = require_admin(request, session)
     require_csrf(request, admin_session)
     effects = update_settings(session, req.values, apply=req.apply)
@@ -4832,9 +4830,6 @@ async def admin_update_settings(
             if retry_task is not None:
                 await asyncio.gather(retry_task, return_exceptions=True)
         netease._base = settings.netease_api_base.rstrip("/")
-        BILIBILI_AUDIO_CACHE_TTL_SECONDS = max(0, settings.bilibili_audio_cache_ttl_hours) * 3600
-        BILIBILI_AUDIO_CACHE_MAX_BYTES = max(0, settings.bilibili_audio_cache_max_mb) * 1024 * 1024
-        BILIBILI_AUDIO_PARTIAL_TTL_SECONDS = max(0, settings.bilibili_audio_partial_ttl_minutes) * 60
         if "backend.voice_grpc_addr" in req.values:
             await voice.close()
         if "voice" in effects and any(key.startswith("voice.description_") for key in req.values):
@@ -6053,33 +6048,6 @@ async def qqmusic_album_cover(album_mid: str) -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# QQ Music Login endpoints
-
-@app.get("/qqmusic/login/qr/key")
-async def qqmusic_qr_key() -> dict:
-    """获取QQ音乐二维码登录密钥"""
-    try:
-        return await qqmusic.get_qr_key()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/qqmusic/login/qr/check")
-async def qqmusic_qr_check(qr_key: str, ptqrtoken: str, pt_login_sig: str = "") -> dict:
-    """检查QQ音乐二维码登录状态"""
-    try:
-        # Set the pt_login_sig in the client if provided
-        if pt_login_sig:
-            qqmusic._pt_login_sig = pt_login_sig
-        return await qqmusic.check_qr_status(qr_key, ptqrtoken)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-class QQMusicCookieSetRequest(BaseModel):
-    cookie: str
-
-
 class QQMusicQRConfirmRequest(BaseModel):
     auth_url: str
 
@@ -6119,12 +6087,11 @@ async def admin_qqmusic_qr_confirm(
     _require_admin_token(request)
     r = await qqmusic.confirm_qr_login(req.auth_url)
     c = (qqmusic.get_cookie() or "").strip()
-    print(f"[DEBUG] QR confirm - new cookie length: {len(c)}, preview: {c[:200]}...")
     if c:
         _set_secret(session, "qqmusic_cookie", c)
-        print(f"[DEBUG] QR confirm - cookie saved to database")
+        logger.info("QQ Music QR login cookie saved")
     else:
-        print(f"[DEBUG] QR confirm - no cookie to save")
+        logger.warning("QQ Music QR confirmation returned no cookie")
     return {"ok": True, "admin_cookie_set": bool(c), "uin": qqmusic.get_uin(), "raw": r}
 
 
@@ -6233,34 +6200,6 @@ async def admin_bilibili_qr_check(
     }
 
 
-@app.post("/qqmusic/login/cookie")
-async def qqmusic_set_cookie(req: QQMusicCookieSetRequest) -> dict:
-    """设置QQ音乐Cookie"""
-    try:
-        qqmusic.set_cookie(req.cookie)
-        return {"success": True, "message": "Cookie设置成功", "uin": qqmusic.get_uin()}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/qqmusic/login/status")
-async def qqmusic_login_status() -> dict:
-    """获取QQ音乐登录状态"""
-    try:
-        if not qqmusic.get_cookie():
-            return {"logged_in": False, "message": "未设置Cookie"}
-        
-        refresh_result = await qqmusic.refresh_login()
-        return {
-            "logged_in": refresh_result["success"],
-            "message": refresh_result["message"],
-            "uin": qqmusic.get_uin(),
-            "cookie": qqmusic.get_cookie()
-        }
-    except Exception as e:
-        return {"logged_in": False, "message": str(e)}
-
-
 @app.get("/qqmusic/user/info")
 async def qqmusic_user_info() -> dict:
     """获取QQ音乐用户信息"""
@@ -6279,10 +6218,4 @@ async def qqmusic_user_playlists() -> dict:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/qqmusic/login/refresh")
-async def qqmusic_refresh_login() -> dict:
-    """刷新QQ音乐登录状态"""
-    try:
-        return await qqmusic.refresh_login()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+app.include_router(create_qqmusic_login_router(qqmusic, _require_admin_token))

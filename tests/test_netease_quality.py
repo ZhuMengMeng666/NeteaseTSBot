@@ -46,22 +46,41 @@ class NeteaseQualityTests(unittest.IsolatedAsyncioTestCase):
         result = await main.song_url("22699090", "auto", session=None)
         self.assertEqual("standard", result["level"])
 
-    async def test_explicit_quality_reports_risk_without_silent_downgrade(self):
-        self.responses = [(400, {"code": -460, "message": "MUSIC_U=do-not-reflect"})]
+    async def test_explicit_quality_reports_risk_without_silent_quality_retry(self):
+        self.responses = [
+            (400, {"code": -460, "message": "MUSIC_U=do-not-reflect"}),
+            (400, {"code": -460}),
+        ]
         with self.assertRaises(HTTPException) as raised:
             await main.song_url("22699090", "exhigh", session=None)
         self.assertEqual(503, raised.exception.status_code)
         self.assertIn("-460", raised.exception.detail)
         self.assertNotIn("MUSIC_U", raised.exception.detail)
         self.assertNotIn("music-api.test", raised.exception.detail)
-        self.assertEqual(1, len(self.requests))
+        self.assertEqual(2, len(self.requests))
+        self.assertEqual("exhigh", self.requests[0].url.params["level"])
+        self.assertEqual("/song/url", self.requests[1].url.path)
+        self.assertEqual("320000", self.requests[1].url.params["br"])
 
     async def test_standard_risk_error_ends_auto_fallback(self):
-        self.responses = [(400, {"code": -460}), (400, {"code": -460})]
+        self.responses = [
+            (400, {"code": -460}),
+            (400, {"code": -460}),
+            (400, {"code": -460}),
+        ]
         with self.assertRaises(HTTPException) as raised:
             await main.song_url("22699090", "auto", session=None)
         self.assertEqual(503, raised.exception.status_code)
-        self.assertEqual(2, len(self.requests))
+        self.assertEqual(3, len(self.requests))
+        self.assertEqual(["jymaster", "standard"], [r.url.params["level"] for r in self.requests[:2]])
+        self.assertEqual("/song/url", self.requests[2].url.path)
+
+    async def test_explicit_quality_risk_falls_back_to_legacy_bitrate_endpoint(self):
+        self.responses = [(400, {"code": -460}), (200, self.playable())]
+        result = await main.song_url("22699090", "exhigh", session=None)
+        self.assertEqual("https://audio.example/song.mp3", result["url"])
+        self.assertEqual("/song/url", self.requests[1].url.path)
+        self.assertEqual("320000", self.requests[1].url.params["br"])
 
     async def test_unrelated_upstream_error_is_not_retried(self):
         self.responses = [(400, {"code": 400, "message": "bad parameter"})]
