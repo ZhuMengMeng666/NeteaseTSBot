@@ -16,14 +16,14 @@ import {
   Search
 } from 'lucide-vue-next'
 import { getFavoriteSongs, isFavoriteSong, toggleFavoriteSong } from '../utils/favorites'
-import { filterLikedSongs } from '../utils/likesSearch'
 import FloatingErrorToast from '../components/FloatingErrorToast.vue'
 import { useTransientMessage } from '../composables/useTransientMessage'
 import { useNeteaseLikes } from '../composables/useNeteaseLikes'
+import { isNearLikesBottom, useLikesDisplay, type LikesSortMode } from '../composables/useLikesDisplay'
 
 const SORT_STORAGE_KEY = 'tsbot:likes:sort'
 
-type SortMode = 'default' | 'added' | 'name'
+type SortMode = LikesSortMode
 
 const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: 'default', label: '顺序' },
@@ -31,11 +31,15 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
   { value: 'name', label: '名称（A→Z）' },
 ]
 
-const { error, likes, loading, hasMore, load, loadMore } = useNeteaseLikes()
+const { error, likes, loading, load } = useNeteaseLikes()
 const sortMode = ref<SortMode>(loadSortMode())
 const showSortMenu = ref(false)
 const sortMenuRef = ref<HTMLElement | null>(null)
 const searchQuery = ref('')
+const songList = computed<any[]>(() => Array.isArray(likes.value?.songs) ? likes.value.songs : [])
+const { visibleSongs, hasMore, loadMore } = useLikesDisplay(songList, searchQuery, sortMode)
+const loadingMore = ref(false)
+let loadMoreFrame = 0
 const { message: actionError, showMessage: showActionError } = useTransientMessage()
 
 function loadSortMode(): SortMode {
@@ -77,22 +81,18 @@ function handleDocumentKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') showSortMenu.value = false
 }
 
-const sortedSongs = computed(() => {
-  const list = Array.isArray(likes.value?.songs) ? [...likes.value.songs] : []
-  if (sortMode.value === 'added') {
-    return list.sort((a, b) => Number(b?.added_at || 0) - Number(a?.added_at || 0))
-  }
-  if (sortMode.value === 'name') {
-    return list.sort((a, b) =>
-      String(a?.name || '').localeCompare(String(b?.name || ''), 'zh-CN', { numeric: true }),
-    )
-  }
-  return list
-})
+function handleScroll(event: Event) {
+  if (loadingMore.value || !hasMore.value) return
+  const target = event.currentTarget as HTMLElement | null
+  if (!target || !isNearLikesBottom(target)) return
 
-const visibleSongs = computed(() => {
-  return filterLikedSongs(sortedSongs.value, searchQuery.value)
-})
+  loadingMore.value = true
+  loadMoreFrame = requestAnimationFrame(() => {
+    loadMore()
+    loadingMore.value = false
+    loadMoreFrame = 0
+  })
+}
 
 const favoriteSongIds = ref<Set<number>>(new Set())
 
@@ -143,6 +143,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (loadMoreFrame) cancelAnimationFrame(loadMoreFrame)
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('keydown', handleDocumentKeydown)
 })
@@ -236,7 +237,10 @@ onUnmounted(() => {
     </div>
 
     <!-- Content -->
-    <div class="flex-1 overflow-y-auto px-4 md:px-6 py-4 md:py-6 pb-24 scrollbar-thin">
+    <div
+      class="flex-1 overflow-y-auto px-4 md:px-6 py-4 md:py-6 pb-24 scrollbar-thin"
+      @scroll.passive="handleScroll"
+    >
       <!-- Loading state -->
       <div v-if="loading && (!likes || !likes.songs)" class="h-64 flex items-center justify-center">
         <div class="flex flex-col items-center gap-3">
@@ -371,14 +375,10 @@ onUnmounted(() => {
         </div>
 
         <div class="flex items-center justify-center py-6">
-          <button
-            v-if="hasMore"
-            @click="loadMore"
-            :disabled="loading"
-            class="btn-secondary text-sm py-2 px-4"
-          >
-            <span>加载更多</span>
-          </button>
+          <div v-if="hasMore" class="flex items-center gap-2 text-xs text-gray-400">
+            <RefreshCw :size="14" :class="{ 'animate-spin': loadingMore }" />
+            <span>{{ loadingMore ? '正在加载更多...' : '继续下拉加载更多' }}</span>
+          </div>
           <div v-else class="text-xs text-gray-400">
             已加载全部（{{ likes?.total ?? (likes?.songs?.length ?? 0) }}）
           </div>
